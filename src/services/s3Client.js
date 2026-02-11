@@ -20,6 +20,7 @@ if (missingVars.length > 0) {
 
 const s3Client = new S3Client({
   region: process.env.S3_REGION,
+  endpoint: process.env.S3_ENDPOINT,// Added By Abhinash
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
