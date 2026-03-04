@@ -29,6 +29,10 @@ const s3Client = new S3Client({
   requestHandler: {
     requestTimeout: 30000,
   },
+  // Added by Abhinash (needed for backblaze):
+  forcePathStyle: true, 
+  requestChecksumCalculation: "when_required", 
+  responseChecksumValidation: "when_required",
 });
 
 export default s3Client;
