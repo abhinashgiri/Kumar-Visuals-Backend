@@ -16,7 +16,6 @@ import {
 ffmpeg.setFfmpegPath(ffmpegPath);
 ffmpeg.setFfprobePath(ffprobePath.path);
 
-/* ========================== MULTER ========================== */
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -25,12 +24,26 @@ const upload = multer({
   },
 });
 
-/* ========================== CONSTANTS ========================== */
 
 const ALLOWED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
+
+const ALLOWED_AUDIO_MIMES = [
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/mp4",
+  "audio/x-m4a",
+];
+
+const ALLOWED_VIDEO_MIMES = [
+  "video/mp4",
+  "video/quicktime",
+  "video/x-matroska",
+];
+
 const MAX_THUMBNAIL_SIZE = 5 * 1024 * 1024;
 
-/* ========================== HELPERS ========================== */
 
 function sanitizeFilename(name = "") {
   return name
@@ -39,11 +52,16 @@ function sanitizeFilename(name = "") {
     .replaceAll(/[^a-zA-Z0-9._-]/g, "");
 }
 
-/* ========================== CONTROLLERS ========================== */
+function safeUnlink(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (_) {}
+}
 
-/**
- * GET THUMBNAIL UPLOAD URL
- */
+
+
 export const getThumbnailUploadUrl = async (req, res, next) => {
   try {
     const schema = Joi.object({
@@ -54,9 +72,14 @@ export const getThumbnailUploadUrl = async (req, res, next) => {
       size: Joi.number().max(MAX_THUMBNAIL_SIZE).optional(),
     });
 
-    const { error, value } = schema.validate(req.body, { stripUnknown: true });
+    const { error, value } = schema.validate(req.body, {
+      stripUnknown: true,
+    });
+
     if (error) {
-      return res.status(400).json({ message: error.details[0].message });
+      return res.status(400).json({
+        message: error.details[0].message,
+      });
     }
 
     const { filename, contentType } = value;
@@ -66,7 +89,7 @@ export const getThumbnailUploadUrl = async (req, res, next) => {
       filename: sanitizeFilename(filename),
     });
 
-    const { uploadUrl, publicUrl, expiresIn } = await createUploadUrl({
+    const { uploadUrl, url, expiresIn } = await createUploadUrl({
       key,
       contentType,
     });
@@ -74,7 +97,7 @@ export const getThumbnailUploadUrl = async (req, res, next) => {
     return res.json({
       success: true,
       uploadUrl,
-      publicUrl,
+      publicUrl: url,
       key,
       expiresIn,
     });
@@ -83,9 +106,6 @@ export const getThumbnailUploadUrl = async (req, res, next) => {
   }
 };
 
-/**
- * UPLOAD & PROCESS PREVIEW MEDIA
- */
 export const uploadPreviewMedia = [
   upload.single("file"),
 
@@ -95,14 +115,17 @@ export const uploadPreviewMedia = [
 
     try {
       if (!req.file) {
-        return res.status(400).json({ message: "File missing" });
+        return res.status(400).json({
+          message: "File missing",
+        });
       }
 
       const { mimetype, originalname, path: tempPath } = req.file;
+
       inputPath = tempPath;
 
-      const isAudio = mimetype.startsWith("audio/");
-      const isVideo = mimetype.startsWith("video/");
+      const isAudio = ALLOWED_AUDIO_MIMES.includes(mimetype);
+      const isVideo = ALLOWED_VIDEO_MIMES.includes(mimetype);
 
       if (!isAudio && !isVideo) {
         return res.status(400).json({
@@ -111,11 +134,15 @@ export const uploadPreviewMedia = [
       }
 
       const ext = mime.extension(mimetype);
+
       if (!ext) {
-        return res.status(400).json({ message: "Unsupported media type" });
+        return res.status(400).json({
+          message: "Unsupported media type",
+        });
       }
 
       const outputExt = isAudio ? "mp3" : "mp4";
+
       outputPath = `${inputPath}_preview.${outputExt}`;
 
       await new Promise((resolve, reject) => {
@@ -137,10 +164,16 @@ export const uploadPreviewMedia = [
             .audioBitrate("128k")
             .format("mp4")
             .setDuration(30)
-            .outputOptions(["-movflags +faststart", "-preset veryfast"]);
+            .outputOptions([
+              "-movflags +faststart",
+              "-preset veryfast",
+            ]);
         }
 
-        cmd.on("end", resolve).on("error", reject).save(outputPath);
+        cmd
+          .on("end", resolve)
+          .on("error", reject)
+          .save(outputPath);
       });
 
       const duration = await new Promise((resolve, reject) => {
@@ -148,6 +181,7 @@ export const uploadPreviewMedia = [
           if (err) return reject(err);
 
           const rawDuration = data?.format?.duration;
+
           if (!rawDuration || rawDuration <= 0) {
             return reject(new Error("Invalid media duration"));
           }
@@ -165,26 +199,26 @@ export const uploadPreviewMedia = [
 
       const contentType = isAudio ? "audio/mpeg" : "video/mp4";
 
-      const { publicUrl } = await uploadBufferToS3({
+      const { url } = await uploadBufferToS3({
         buffer,
         key,
         contentType,
       });
 
-      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      safeUnlink(inputPath);
+      safeUnlink(outputPath);
 
       return res.json({
         success: true,
         previewAudio: {
-          url: publicUrl,
+          url,
           key,
           duration,
         },
       });
     } catch (err) {
-      if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-      if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      safeUnlink(inputPath);
+      safeUnlink(outputPath);
       next(err);
     }
   },

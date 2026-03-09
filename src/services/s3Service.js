@@ -1,28 +1,39 @@
 import {
   PutObjectCommand,
   HeadObjectCommand,
-  DeleteObjectCommand,
+  DeleteObjectCommand
 } from "@aws-sdk/client-s3";
+
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import crypto from "node:crypto";
 import path from "node:path";
 import s3Client from "./s3Client.js";
 
 const BUCKET = process.env.S3_BUCKET_NAME;
+const REGION = process.env.S3_REGION;
+
 const UPLOAD_EXP = Math.min(
   Math.max(Number(process.env.UPLOAD_URL_EXPIRATION ?? 900), 60),
   3600
 );
-const CDN_BASE_URL = (process.env.CDN_BASE_URL || "").replace(/\/+$/, "");
-const REGION = process.env.S3_REGION || "ap-south-1";
 
 if (!BUCKET) {
   throw new Error("S3_BUCKET_NAME missing in environment");
 }
 
 /* ============================================================
-   DIRECT BUFFER UPLOAD (SERVER-SIDE)
+   PUBLIC URL
 ============================================================ */
+
+export function publicUrlFromKey(key) {
+  if (!key) return "";
+  return `https://s3.${REGION}.backblazeb2.com/${BUCKET}/${key}`;
+}
+
+/* ============================================================
+   DIRECT BUFFER UPLOAD
+============================================================ */
+
 export async function uploadBufferToS3({ buffer, key, contentType }) {
   if (!buffer || !key || !contentType) {
     throw new Error("Missing parameters for buffer upload");
@@ -34,18 +45,21 @@ export async function uploadBufferToS3({ buffer, key, contentType }) {
     Body: buffer,
     ContentType: contentType,
     ContentLength: buffer.length,
-    CacheControl: "public, max-age=31536000, immutable",
-    // ServerSideEncryption: "AES256",
+    CacheControl: "public, max-age=31536000, immutable"
   });
 
   await s3Client.send(cmd);
 
-  return { publicUrl: publicUrlFromKey(key), key };
+  return {
+    key,
+    url: publicUrlFromKey(key)
+  };
 }
 
 /* ============================================================
-   SIGNED URL (FRONTEND UPLOAD)
+   SIGNED UPLOAD URL
 ============================================================ */
+
 export async function createUploadUrl({ key, contentType }) {
   if (!key || !contentType) {
     throw new Error("key and contentType required");
@@ -55,29 +69,30 @@ export async function createUploadUrl({ key, contentType }) {
     Bucket: BUCKET,
     Key: key,
     ContentType: contentType,
-    CacheControl: "public, max-age=31536000, immutable",
-    // ServerSideEncryption: "AES256",
+    CacheControl: "public, max-age=31536000, immutable"
   });
 
   const uploadUrl = await getSignedUrl(s3Client, cmd, {
-    expiresIn: UPLOAD_EXP,
+    expiresIn: UPLOAD_EXP
   });
 
   return {
     uploadUrl,
-    publicUrl: publicUrlFromKey(key),
     key,
-    expiresIn: UPLOAD_EXP,
+    url: publicUrlFromKey(key),
+    expiresIn: UPLOAD_EXP
   };
 }
 
 /* ============================================================
    KEY GENERATORS
 ============================================================ */
+
 export function generateKey({ artistId, filename, folder = "" }) {
   if (!filename) throw new Error("filename is required");
 
   const ext = path.extname(filename).toLowerCase();
+
   const base = path
     .basename(filename, ext)
     .replaceAll(/\s+/g, "_")
@@ -91,6 +106,7 @@ export function generateKey({ artistId, filename, folder = "" }) {
   if (folder) parts.push(folder);
 
   const finalName = `${ts}_${rand}_${base}${ext}`;
+
   return parts.length ? `${parts.join("/")}/${finalName}` : finalName;
 }
 
@@ -98,6 +114,7 @@ export function generateFrontendKey({ filename, section = "generic" }) {
   if (!filename) throw new Error("filename required");
 
   const ext = path.extname(filename).toLowerCase();
+
   const base = path
     .basename(filename, ext)
     .replaceAll(/\s+/g, "_")
@@ -110,30 +127,29 @@ export function generateFrontendKey({ filename, section = "generic" }) {
 }
 
 /* ============================================================
-   URL HELPERS
-============================================================ */
-export function publicUrlFromKey(key) {
-  if (!key) return "";
-
-  if (CDN_BASE_URL) {
-    return `${CDN_BASE_URL}/${key}`;
-  }
-  // Use your Backblaze S3 Endpoint for the public URL
-  return `https://${BUCKET}.s3.${REGION}.backblazeb2.com/${key}`;
-  // return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
-}
-
-/* ============================================================
    OBJECT OPERATIONS
 ============================================================ */
+
 export async function headObject(key) {
   if (!key) throw new Error("key required");
-  return s3Client.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+
+  return s3Client.send(
+    new HeadObjectCommand({
+      Bucket: BUCKET,
+      Key: key
+    })
+  );
 }
 
 export async function deleteObject(key) {
   if (!key) return null;
-  return s3Client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+
+  return s3Client.send(
+    new DeleteObjectCommand({
+      Bucket: BUCKET,
+      Key: key
+    })
+  );
 }
 
 export async function deleteObjectWithVerify(key, opts = {}) {
@@ -151,9 +167,11 @@ export async function deleteObjectWithVerify(key, opts = {}) {
         lastErr = new Error("Object still exists");
       } catch (err) {
         const status = err?.$metadata?.httpStatusCode;
+
         if (status === 404 || err?.name === "NotFound") {
           return { success: true, attempts: attempt };
         }
+
         lastErr = err;
       }
     } catch (err) {
@@ -165,7 +183,7 @@ export async function deleteObjectWithVerify(key, opts = {}) {
 
   return {
     success: false,
-    error: lastErr?.message || String(lastErr),
+    error: lastErr?.message || String(lastErr)
   };
 }
 
@@ -177,5 +195,5 @@ export default {
   uploadBufferToS3,
   headObject,
   deleteObject,
-  deleteObjectWithVerify,
+  deleteObjectWithVerify
 };
